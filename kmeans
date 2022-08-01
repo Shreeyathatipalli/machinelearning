@@ -1,0 +1,112 @@
+ import pandas as pd
+import nltk
+nltk.download('wordnet')
+nltk.download('omw-1.4')
+
+def lemmatize(text):
+    s_tokenizer = nltk.tokenize.WhitespaceTokenizer()
+    lemmatizer = nltk.stem.WordNetLemmatizer()
+    return [lemmatizer.lemmatize(w) for w in s_tokenizer.tokenize(text)]
+
+def stuff(data):
+    data['tweet'] = data.tweet.apply(lemmatize)
+    return data
+
+
+#pre-process data
+def prepro(data):
+    # Remove tweet id and timestamp
+    data = data.drop(data.columns[[0, 1]], axis=1)
+    # pd.set_option('display.max_rows', None) 
+    # pd.set_option('display.max_colwidth', 199) 
+    # Remove any word that starts with the symbol @ e.g. @AnnaMedaris
+    data['tweet'] = data['tweet'].str.replace('(@\w+.*?)', "")
+    # Remove any hashtag symbols e.g. convert #depression to depression
+    data['tweet'] = data['tweet'].replace({'#': ''}, regex=True)
+    # Remove any URL
+    data['tweet'] = data['tweet'].str.rsplit('http').str[0] #.str.split()
+    #lemmatize and tokenize the tweets
+    data = stuff(data)
+    return data
+
+# Jaccard distance
+def jaccard(arg1,arg2):
+    arg1 = set(arg1)
+    arg2 = set(arg2)
+    # | - union operator for python
+    uni = len(list((arg1 | arg2)))
+    intersect = len(list((arg1 & arg2)))
+    return 1-(intersect/uni)
+
+# Calc sse by computing all the distances of each tweet with the centroid and adding them
+def calc_se(k_clusters, centroids):
+    se = 0
+    for i in centroids.key():
+        for j in list(k_clusters[i]):
+            se += jaccard(centroids[i],j)**2
+    return se
+
+
+def calc_kmeans(K, data, centroids=None):
+    # shuffle the rows
+    data = data.sample(frac=1).reset_index(drop=True)
+    # intialize the centroids for first time and select the centroids from the shuffled data which randomizes the selection
+    if centroids == None:
+        centroids = {}
+        for i in range(K):
+            if data['tweet'].iloc[i] not in list(centroids.key()):
+                centroids[i] = data['tweet'].iloc[i]
+
+    # form K Clusters
+    key = range(K)
+    k_clusters = dict(zip(key, ([] for _ in key)))
+    # get distance of each tweet from all centroids in the cluster and put it in the nearest cluster
+    for g in data['tweet']:
+        dist = [jaccard(g, centroids[i]) for i in centroids]
+        min_dist = dist.index(min(dist))
+        k_clusters[min_dist].append(g)
+
+    # calculate new centroids based on the min distance of sum of all tweets wrt each other in a cluster
+    recompute_centroid = dict(zip(key, ([] for _ in key)))
+    for i in k_clusters:
+        cluster = k_clusters[i]
+        dists = []
+        for j in cluster:
+            if j != []:
+                dist = [jaccard(j, c) for c in cluster]
+                # adding the sum of distances of each tweet wrt others in the list
+                dists.append(sum(dist))
+        # get the tweet which is at a min distance than others, which in ideal case should be our centroid
+        index = dists.index(min(dists))
+        recompute_centroid[i] = cluster[index]
+
+    flag = True
+    # check if the old centroids and the recomputed centroids are the same
+    for i in range(K):
+        if(list(centroids.values())[i] != list(recompute_centroid.values())[i]):
+            flag = True
+            break
+        else:
+           flag = False
+
+    if flag == True:
+        print("Centroids changed. Recompute the centroids again.")
+        # Centroids changed, so the old ones becomes the new ones so that we do this all over again
+        centroids = recompute_centroid.copy()
+        # calculate kmeans again with the recomputed centroids and then some
+        calc_kmeans(K, data, centroids)
+    else:
+        print("Converged.\n SSE is ", calc_se(k_clusters, centroids))
+        print("Kth Cluster : Number of tweets")
+        for i in range(K):
+            print(i+1, ":", len(k_clusters[i]),"tweets")
+
+    return None
+
+data = pd.read_csv("https://gist.githubusercontent.com/Shreeyathatipalli/31c2f78b00a1c6b19a51ae058bc64fd7/raw/4e5229e4e9179347a4ba22405c090fe9a49dd70a/txt",
+                   names=['tweet_id', 'data_time', 'tweet'], sep='|')
+data = prepro(data)
+
+k_values = [2,4,6,8,10,12]
+for i in k_values:
+    calc_kmeans(i, data, centroids=None)
